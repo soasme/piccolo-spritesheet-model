@@ -88,3 +88,28 @@ def test_dataset_empty_dir(tmp_path):
 
     ds = SpriteFrameDataset(tmp_path)
     assert len(ds) == 0
+
+
+def test_jepa_training_step_produces_finite_loss():
+    from train import SpriteEncoder, SpritePredictor, gaussian_reg, LAMBDA_REG
+
+    encoder = SpriteEncoder()
+    predictor = SpritePredictor()
+    optimizer = torch.optim.AdamW(
+        list(encoder.parameters()) + list(predictor.parameters()), lr=3e-4
+    )
+    frame_t = torch.randn(8, 3, 32, 32)
+    frame_t1 = torch.randn(8, 3, 32, 32)
+
+    z_t = encoder(frame_t)
+    z_t1_pred = predictor(z_t)
+    with torch.no_grad():
+        z_t1 = encoder(frame_t1)
+
+    loss = F.mse_loss(z_t1_pred, z_t1) + LAMBDA_REG * gaussian_reg(z_t)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+    assert torch.isfinite(loss), f"loss is not finite: {loss.item()}"
+    assert loss.item() > 0

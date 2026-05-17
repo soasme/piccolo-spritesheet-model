@@ -124,3 +124,68 @@ class SpriteFrameDataset(torch.utils.data.Dataset):
             self._transform(Image.open(p_t).convert("RGB")),
             self._transform(Image.open(p_t1).convert("RGB")),
         )
+
+
+# ── Training loop ──────────────────────────────────────────────────────────
+def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "cuda") -> None:
+    dev = torch.device(device)
+    dataset = SpriteFrameDataset(FRAMES_DIR)
+    if len(dataset) == 0:
+        raise RuntimeError(f"No frame pairs found in {FRAMES_DIR}. Run prepare.py first.")
+
+    loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True,
+        num_workers=4, pin_memory=True, drop_last=True,
+    )
+    encoder = SpriteEncoder().to(dev)
+    predictor = SpritePredictor().to(dev)
+    optimizer = torch.optim.AdamW(
+        list(encoder.parameters()) + list(predictor.parameters()),
+        lr=LR, weight_decay=WEIGHT_DECAY,
+    )
+
+    step, best_loss = 0, float("inf")
+    data_iter = iter(loader)
+    print(f"Training on {len(dataset)} frame pairs  device={device}")
+
+    while step < steps:
+        try:
+            frame_t, frame_t1 = next(data_iter)
+        except StopIteration:
+            data_iter = iter(loader)
+            frame_t, frame_t1 = next(data_iter)
+
+        frame_t, frame_t1 = frame_t.to(dev), frame_t1.to(dev)
+        z_t = encoder(frame_t)
+        z_t1_pred = predictor(z_t)
+        with torch.no_grad():
+            z_t1 = encoder(frame_t1)
+
+        loss = F.mse_loss(z_t1_pred, z_t1) + LAMBDA_REG * gaussian_reg(z_t)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        if step % LOG_EVERY == 0:
+            pred_error = (1 - F.cosine_similarity(z_t1_pred.detach(), z_t1).mean()).item()
+            print(f"step {step:>6d}  loss={loss.item():.4f}  pred_error={pred_error:.4f}")
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                torch.save(
+                    {"encoder": encoder.state_dict(), "predictor": predictor.state_dict()},
+                    CHECKPOINT_PATH,
+                )
+        step += 1
+
+    print(f"Done. Best loss: {best_loss:.4f}  checkpoint: {CHECKPOINT_PATH}")
+
+
+if __name__ == "__main__":
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--steps", type=int, default=MAX_STEPS)
+    p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    p.add_argument("--device", type=str, default="cuda")
+    args = p.parse_args()
+    train(steps=args.steps, batch_size=args.batch_size, device=args.device)
