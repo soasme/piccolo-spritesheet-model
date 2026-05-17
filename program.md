@@ -6,151 +6,133 @@ The job is simple: improve `train.py` to get the lowest possible `pred_error` fr
 
 ## Setup
 
-Before starting a run, work with the user to:
+To set up a new experiment, work with the user to:
 
-1. Agree on a run tag based on the date, for example `may17` or `2026-05-17`.
-2. Inspect `git status --short` before touching anything.
-3. If `train.py` already has uncommitted changes that you did not make, stop and ask the user how to proceed. Do not overwrite user work.
-4. Create a dedicated branch such as `autoresearch/<tag>` from the current baseline commit.
-5. Read these files for full context:
-   - `README.md` - repository context and constraints
-   - `prepare.py` - data download and frame slicing; do not modify
-   - `train.py` - the only file you optimize
-   - `eval.py` - evaluation entrypoint and source-of-truth metric
-6. Verify dependencies are installed with `uv sync` if needed.
-7. Verify data exists under `data/frames/`. If not, run `uv run prepare.py` first. If network access is unavailable, ask the human to prepare the data.
-8. Create `results.tsv` with this header row:
+1. **Agree on a run tag**: propose a tag based on today's date (e.g. `may17`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
+2. **Create the branch**: `git checkout -b autoresearch/<tag>` from the current baseline commit.
+3. **Read the in-scope files**: Read these files for full context:
+   - `README.md` — repository context and constraints.
+   - `prepare.py` — data download and frame slicing. Do not modify.
+   - `train.py` — the only file you optimize.
+   - `eval.py` — evaluation entrypoint and source-of-truth metric. Do not modify.
+4. **Verify data**: Check that `data/frames/` exists and has frame pairs. If not, run `uv run --no-sync prepare.py`. If network is unavailable, ask the human.
+5. **Verify dependencies**: Run `uv sync` if needed, then reinstall the CUDA-compatible torch on the server: `uv pip install "torch==2.5.1+cu124" "torchvision==0.20.1+cu124" --index-url https://download.pytorch.org/whl/cu124`.
+6. **Pick device**: `cuda` if available, `mps` on Apple Silicon, otherwise `cpu`.
+7. **Initialize results.tsv**: Create it with just the header row if it does not exist. **Do NOT commit results.tsv** — leave it untracked by git.
 
 ```tsv
-commit	pred_error	status	description
+commit	pred_error	memory_gb	status	description
 ```
 
-9. Pick an evaluation device:
-   - `cuda` if CUDA is available
-   - `mps` on Apple Silicon if CUDA is not available
-   - `cpu` otherwise
-
-Once setup is confirmed, start the experimentation loop.
+Once setup is confirmed, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment is a full training run using the current repo defaults:
+Each experiment is a full training run followed by an evaluation:
 
 ```bash
-uv run train.py
-```
-
-Then evaluate the checkpoint:
-
-```bash
-uv run eval.py --device <device>
+uv run --no-sync train.py > run.log 2>&1
+uv run --no-sync eval.py --device <device> > eval.log 2>&1
 ```
 
 ### What you CAN do
 
-- Modify `train.py`
-- Change model architecture, loss weighting, optimizer, scheduler, batch size, latent size, predictor design, logging, checkpointing, and training loop details inside `train.py`
+- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, loss weighting, optimizer, scheduler, batch size, latent size, predictor design, logging, checkpointing, and training loop details.
 
 ### What you CANNOT do
 
-- Modify `prepare.py`
-- Modify `eval.py`
-- Change the dataset contents by hand
-- Add new dependencies
-- Change the metric definition
+- Modify `prepare.py` or `eval.py`.
+- Change the dataset contents by hand.
+- Add new dependencies.
+- Change the metric definition.
 
 ### Goal
 
-Minimize `pred_error`. Lower is better.
+**Minimize `pred_error`.** Lower is better. Training loss is only a proxy; `eval.py` is the source of truth.
 
-Training loss is only a proxy. `eval.py` is the source of truth.
+### VRAM
+
+VRAM is a soft constraint. Some increase is acceptable for meaningful `pred_error` gains, but it should not blow up dramatically.
 
 ### Simplicity criterion
 
-Prefer changes that are easy to reason about and easy to keep. A tiny improvement is not worth a messy hack. A simple change that gives the same or better result is a win.
+All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
 ### First run
 
-The first run should always be the baseline with no code changes.
+The first run should always be the baseline with no code changes, to establish the starting point.
 
 ## Output format
 
 Training prints progress lines like:
 
-```text
+```
 step      0  loss=0.1234  pred_error=0.5678
 ```
 
-Evaluation prints the metric in this form:
+Evaluation prints the metric:
 
-```text
+```
 pred_error (mean cosine distance): 0.1234
 ```
 
-Use the evaluation output, not the training log, to judge experiments.
-
-## Logging results
-
-After every experiment, append one row to `results.tsv`.
-
-Columns:
-
-1. `commit` - short git hash for kept runs; use `working` for uncommitted crash/debug runs
-2. `pred_error` - numeric metric from `eval.py`; use `0.0000` for crashes
-3. `status` - `keep`, `discard`, or `crash`
-4. `description` - short description of the idea tested
-
-Example:
-
-```tsv
-commit	pred_error	status	description
-4f2c1ab	0.4123	keep	baseline
-9a8b7cd	0.3981	keep	increase encoder depth to 6
-working	0.0000	crash	make predictor twice as wide
-2d3e4f5	0.4210	discard	switch gaussian reg weight to 1.0
-```
-
-## Experiment loop
-
-Repeat until the user interrupts you:
-
-1. Check git state and confirm you understand which changes are yours.
-2. Pick one concrete idea and implement it in `train.py`.
-3. Before running, remove or replace any stale `checkpoint.pt` so you do not accidentally evaluate an old checkpoint.
-4. Run training with output redirected:
-
-```bash
-uv run train.py > run.log 2>&1
-```
-
-5. If training crashes, inspect:
-
-```bash
-tail -n 50 run.log
-```
-
-6. If the crash is a small bug, fix it and rerun. If the idea is fundamentally bad, record a `crash` row and move on.
-7. After a successful training run, evaluate with output redirected:
-
-```bash
-uv run eval.py --device <device> > eval.log 2>&1
-```
-
-8. Extract the metric:
+Extract the metric from the eval log:
 
 ```bash
 grep "pred_error" eval.log
 ```
 
-9. Record the result in `results.tsv`.
-10. If `pred_error` improved, keep the change and commit it with a short message.
-11. If `pred_error` did not improve, discard only your `train.py` experiment and restore the last kept version without touching unrelated user changes.
-12. Repeat.
+## Logging results
+
+After every experiment, append one row to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
+
+Columns:
+
+1. `commit` — short git hash (7 chars) for kept/discarded runs; use `working` for uncommitted crash/debug runs.
+2. `pred_error` — numeric metric from `eval.py`; use `0.000000` for crashes.
+3. `memory_gb` — peak GPU memory in GB, rounded to one decimal (read from `nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits` after training, divide by 1024); use `0.0` for crashes or CPU runs.
+4. `status` — `keep`, `discard`, or `crash`.
+5. `description` — short text description of what this experiment tried.
+
+Example:
+
+```tsv
+commit	pred_error	memory_gb	status	description
+4f2c1ab	0.412300	1.2	keep	baseline
+9a8b7cd	0.398100	1.3	keep	increase encoder depth to 6
+working	0.000000	0.0	crash	make predictor twice as wide (OOM)
+2d3e4f5	0.421000	1.2	discard	switch gaussian reg weight to 1.0
+```
+
+**Do NOT commit results.tsv.** Leave it untracked by git.
+
+## The experiment loop
+
+LOOP FOREVER:
+
+1. Check git state: confirm which commit you are on and that `train.py` has no unexpected changes.
+2. Pick one concrete idea and implement it in `train.py`.
+3. `git commit` the change with a short message.
+4. Remove any stale `checkpoint.pt` so you do not accidentally evaluate an old checkpoint.
+5. Run training: `uv run --no-sync train.py > run.log 2>&1`
+6. If training crashes, inspect: `tail -n 50 run.log`
+7. Run evaluation: `uv run --no-sync eval.py --device <device> > eval.log 2>&1`
+8. Extract the metric: `grep "pred_error" eval.log`
+9. Query peak GPU memory: `nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits`
+10. Record the result in `results.tsv`.
+11. If `pred_error` improved (lower): keep the commit — the branch advances.
+12. If `pred_error` did not improve: `git reset --hard HEAD~1` to revert the commit and restore the last kept version.
+
+**Timeout**: Each training run should complete in under 30 minutes (wall clock). If a run exceeds 30 minutes, kill it with `kill <pid>` and treat it as a failure — log `crash`, revert, and move on.
+
+**Crashes**: Use your judgment. If it's something easy to fix (typo, missing import), fix it and re-run. If the idea is fundamentally broken (OOM, bad architecture), log `crash` as the status, `git reset --hard HEAD~1`, and move on.
+
+**NEVER STOP**: Once the experiment loop has begun, do NOT pause to ask the human whether to continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep or away from the computer, and expects you to continue working *indefinitely* until manually stopped. You are autonomous. If you run out of ideas, think harder — re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
 
 ## Guardrails
 
 - Only compare runs using the same dataset and evaluation path.
 - For real comparisons, use full training runs. Short runs are only for smoke testing after risky refactors.
 - Do not overwrite unrelated dirty files.
-- If you see unexpected edits to `train.py`, pause and ask before continuing.
+- If you see unexpected edits to `train.py` that you did not make, pause and ask before continuing.
 - If a run does not produce a fresh `checkpoint.pt`, treat it as a failed run.
