@@ -86,6 +86,9 @@ if __name__ == "__main__":
     p.add_argument("--device", type=str, default="auto")
     args = p.parse_args()
 
+    if not args.input.exists():
+        raise SystemExit(f"Input file not found: {args.input}")
+
     dev = torch.device(_get_device(args.device))
     encoder, predictor = load_model(args.checkpoint, dev)
     print(f"Building latent index from {args.frames_dir} ...")
