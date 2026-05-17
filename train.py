@@ -16,11 +16,10 @@ PREDICTOR_HIDDEN = 256
 PATCH_SIZE = 4
 DEPTH = 4
 HEADS = 4
-LAMBDA_REG = 0.01
 BATCH_SIZE = 64
 LR = 3e-4
 WEIGHT_DECAY = 1e-4
-TRAINING_BUDGET = 600   # wall-clock seconds of training (excluding startup)
+TRAINING_BUDGET = 300   # wall-clock seconds of training (excluding startup)
 MAX_STEPS = 10_000      # used when time budget is disabled
 LOG_EVERY = 100
 CHECKPOINT_PATH = Path("checkpoint.pt")
@@ -119,12 +118,24 @@ class SpritePredictor(nn.Module):
         return self.net(z)
 
 
-# ── Loss ───────────────────────────────────────────────────────────────────
-def gaussian_reg(z: torch.Tensor) -> torch.Tensor:
-    """Push latents toward N(0,1): mean→0, std→1 per dimension."""
-    mean_loss = z.mean(0).pow(2).mean()
-    var_loss = (1 - z.std(0).clamp(min=1e-6)).pow(2).mean()
-    return mean_loss + var_loss
+# ── Decoder ────────────────────────────────────────────────────────────────
+class SpriteDecoder(nn.Module):
+    def __init__(self, latent_dim: int = LATENT_DIM, out_channels: int = 4):
+        super().__init__()
+        self.proj = nn.Linear(latent_dim, 512 * 4 * 4)
+        self.net = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),  # 4→8
+            nn.GELU(),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # 8→16
+            nn.GELU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # 16→32
+            nn.GELU(),
+            nn.ConvTranspose2d(64, out_channels, kernel_size=4, stride=2, padding=1),  # 32→64
+            nn.Tanh(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(self.proj(z).reshape(z.shape[0], 512, 4, 4))
 
 
 # ── Dataset ────────────────────────────────────────────────────────────────
@@ -204,8 +215,9 @@ def train(time_budget: int | None = TRAINING_BUDGET, batch_size: int = BATCH_SIZ
     )
     encoder = SpriteEncoder().to(dev)
     predictor = SpritePredictor().to(dev)
+    decoder = SpriteDecoder().to(dev)
     optimizer = torch.optim.AdamW(
-        list(encoder.parameters()) + list(predictor.parameters()),
+        list(encoder.parameters()) + list(predictor.parameters()) + list(decoder.parameters()),
         lr=LR, weight_decay=WEIGHT_DECAY,
     )
 
@@ -227,24 +239,23 @@ def train(time_budget: int | None = TRAINING_BUDGET, batch_size: int = BATCH_SIZ
             frame_t, frame_t1, _texts = next(data_iter)
 
         frame_t, frame_t1 = frame_t.to(dev), frame_t1.to(dev)
-        z_t = encoder(frame_t)
-        z_t1_pred = predictor(z_t)
-        with torch.no_grad():
-            z_t1 = encoder(frame_t1)
-
-        loss = F.mse_loss(z_t1_pred, z_t1) + LAMBDA_REG * gaussian_reg(z_t)
+        frame_t1_gen = decoder(predictor(encoder(frame_t)))
+        loss = F.l1_loss(frame_t1_gen, frame_t1)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         if step % LOG_EVERY == 0:
-            pred_error = (1 - F.cosine_similarity(z_t1_pred.detach(), z_t1).mean()).item()
             elapsed = time.time() - t_start
-            print(f"step {step:>6d}  loss={loss.item():.4f}  pred_error={pred_error:.4f}  t={elapsed:.0f}s")
+            print(f"step {step:>6d}  loss={loss.item():.4f}  t={elapsed:.0f}s")
             if loss.item() < best_loss:
                 best_loss = loss.item()
                 torch.save(
-                    {"encoder": encoder.state_dict(), "predictor": predictor.state_dict()},
+                    {
+                        "encoder": encoder.state_dict(),
+                        "predictor": predictor.state_dict(),
+                        "decoder": decoder.state_dict(),
+                    },
                     CHECKPOINT_PATH,
                 )
         step += 1
