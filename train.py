@@ -86,7 +86,7 @@ class SpriteEncoder(nn.Module):
             dim_feedforward=hidden_dim * 4,
             batch_first=True, norm_first=True, dropout=0.0,
         )
-        self.transformer = nn.TransformerEncoder(layer, num_layers=depth)
+        self.transformer = nn.TransformerEncoder(layer, num_layers=depth, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Linear(hidden_dim, latent_dim)
         nn.init.trunc_normal_(self.cls_token, std=0.02)
