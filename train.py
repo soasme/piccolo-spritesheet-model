@@ -94,3 +94,33 @@ def gaussian_reg(z: torch.Tensor) -> torch.Tensor:
     mean_loss = z.mean(0).pow(2).mean()
     var_loss = (1 - z.std(0).clamp(min=1e-6)).pow(2).mean()
     return mean_loss + var_loss
+
+
+# ── Dataset ────────────────────────────────────────────────────────────────
+class SpriteFrameDataset(torch.utils.data.Dataset):
+    _transform = transforms.Compose([
+        transforms.Resize((FRAME_SIZE, FRAME_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]),
+    ])
+
+    def __init__(self, frames_root: Path):
+        self.pairs: list[tuple[Path, Path]] = []
+        groups: dict[str, list[tuple[int, Path]]] = defaultdict(list)
+        for p in frames_root.rglob("*_r[0-9][0-9]_c[0-9][0-9].png"):
+            base, col_str = p.stem.rsplit("_c", 1)
+            groups[base].append((int(col_str), p))
+        for frames in groups.values():
+            frames.sort()
+            for i in range(len(frames) - 1):
+                self.pairs.append((frames[i][1], frames[i + 1][1]))
+
+    def __len__(self) -> int:
+        return len(self.pairs)
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        p_t, p_t1 = self.pairs[idx]
+        return (
+            self._transform(Image.open(p_t).convert("RGB")),
+            self._transform(Image.open(p_t1).convert("RGB")),
+        )

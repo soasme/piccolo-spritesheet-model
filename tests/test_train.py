@@ -52,3 +52,39 @@ def test_gaussian_reg_near_zero_for_standard_normal():
 
     loss = gaussian_reg(torch.randn(2048, 128))
     assert loss.item() < 0.1, f"reg on N(0,1) should be small, got {loss.item():.4f}"
+
+
+def _make_frame_dir(tmp_path, name, rows, cols):
+    d = tmp_path / name
+    d.mkdir()
+    for r in range(rows):
+        for c in range(cols):
+            Image.new("RGB", (32, 32), color=((r * 50) % 256, (c * 40) % 256, 100)).save(
+                d / f"{name}_r{r:02d}_c{c:02d}.png"
+            )
+    return tmp_path
+
+
+def test_dataset_pair_count(tmp_path):
+    from train import SpriteFrameDataset
+
+    _make_frame_dir(tmp_path, "hero", rows=2, cols=4)
+    ds = SpriteFrameDataset(tmp_path)
+    assert len(ds) == 6  # 2 rows × 3 consecutive pairs per row
+
+
+def test_dataset_item_shapes(tmp_path):
+    from train import SpriteFrameDataset, FRAME_SIZE
+
+    _make_frame_dir(tmp_path, "hero", rows=1, cols=3)
+    ds = SpriteFrameDataset(tmp_path)
+    frame_t, frame_t1 = ds[0]
+    assert frame_t.shape == (3, FRAME_SIZE, FRAME_SIZE)
+    assert frame_t1.shape == (3, FRAME_SIZE, FRAME_SIZE)
+
+
+def test_dataset_empty_dir(tmp_path):
+    from train import SpriteFrameDataset
+
+    ds = SpriteFrameDataset(tmp_path)
+    assert len(ds) == 0
