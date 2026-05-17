@@ -9,7 +9,7 @@ def test_sprite_encoder_output_shape():
     from train import SpriteEncoder
 
     encoder = SpriteEncoder()
-    z = encoder(torch.randn(4, 3, 32, 32))
+    z = encoder(torch.randn(4, 4, 32, 32))
     assert z.shape == (4, 128), f"expected (4, 128), got {z.shape}"
 
 
@@ -18,7 +18,7 @@ def test_sprite_encoder_batch_size_invariant():
 
     encoder = SpriteEncoder()
     for B in [1, 8, 16]:
-        z = encoder(torch.randn(B, 3, 32, 32))
+        z = encoder(torch.randn(B, 4, 32, 32))
         assert z.shape == (B, 128)
 
 
@@ -26,7 +26,7 @@ def test_sprite_encoder_gradients_flow():
     from train import SpriteEncoder
 
     encoder = SpriteEncoder()
-    loss = encoder(torch.randn(2, 3, 32, 32)).mean()
+    loss = encoder(torch.randn(2, 4, 32, 32)).mean()
     loss.backward()
     assert any(p.grad is not None for p in encoder.parameters())
 
@@ -59,7 +59,7 @@ def _make_frame_dir(tmp_path, name, rows, cols):
     d.mkdir()
     for r in range(rows):
         for c in range(cols):
-            Image.new("RGB", (32, 32), color=((r * 50) % 256, (c * 40) % 256, 100)).save(
+            Image.new("RGBA", (32, 32), color=((r * 50) % 256, (c * 40) % 256, 100, 255)).save(
                 d / f"{name}_r{r:02d}_c{c:02d}.png"
             )
     return tmp_path
@@ -74,13 +74,35 @@ def test_dataset_pair_count(tmp_path):
 
 
 def test_dataset_item_shapes(tmp_path):
-    from train import SpriteFrameDataset, FRAME_SIZE
+    from train import SpriteFrameDataset
 
     _make_frame_dir(tmp_path, "hero", rows=1, cols=3)
     ds = SpriteFrameDataset(tmp_path)
-    frame_t, frame_t1 = ds[0]
-    assert frame_t.shape == (3, FRAME_SIZE, FRAME_SIZE)
-    assert frame_t1.shape == (3, FRAME_SIZE, FRAME_SIZE)
+    frame_t, frame_t1, text = ds[0]
+    assert frame_t.shape == (4, 32, 32)
+    assert frame_t1.shape == (4, 32, 32)
+    assert isinstance(text, str)
+
+
+def test_dataset_text_from_metadata(tmp_path):
+    import json
+    from train import SpriteFrameDataset
+
+    _make_frame_dir(tmp_path, "hero", rows=1, cols=3)
+    meta = tmp_path / "hero" / "metadata.json"
+    meta.write_text(json.dumps({"text": "3-frame sprite animation of: hero", "n_frames": 3}))
+    ds = SpriteFrameDataset(tmp_path)
+    _, _, text = ds[0]
+    assert text == "3-frame sprite animation of: hero"
+
+
+def test_dataset_text_empty_without_metadata(tmp_path):
+    from train import SpriteFrameDataset
+
+    _make_frame_dir(tmp_path, "hero", rows=1, cols=3)
+    ds = SpriteFrameDataset(tmp_path)
+    _, _, text = ds[0]
+    assert text == ""
 
 
 def test_dataset_empty_dir(tmp_path):
@@ -98,8 +120,8 @@ def test_jepa_training_step_produces_finite_loss():
     optimizer = torch.optim.AdamW(
         list(encoder.parameters()) + list(predictor.parameters()), lr=3e-4
     )
-    frame_t = torch.randn(8, 3, 32, 32)
-    frame_t1 = torch.randn(8, 3, 32, 32)
+    frame_t = torch.randn(8, 4, 32, 32)
+    frame_t1 = torch.randn(8, 4, 32, 32)
 
     z_t = encoder(frame_t)
     z_t1_pred = predictor(z_t)

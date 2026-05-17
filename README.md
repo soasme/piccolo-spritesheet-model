@@ -6,7 +6,7 @@ A minimal JEPA latent world model for pixel-art sprite animation. Give it sprite
 
 The repo is deliberately kept small and only has three files that matter:
 
-- **`prepare.py`** — downloads sprite sheets from OpenGameArt, slices them into frame pairs, and builds the training dataset. Not modified.
+- **`prepare.py`** — downloads sprite sheets from OpenGameArt and HuggingFace, slices them into frame pairs, and builds the training dataset. Not modified.
 - **`train.py`** — ViT encoder, transformer predictor, and JEPA training loop. Everything is fair game: architecture, loss, optimizer, hyperparameters. **This file is edited and iterated on.**
 - **`eval.py`** — measures identity consistency, palette consistency, and temporal smoothness. Not modified.
 

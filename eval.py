@@ -24,7 +24,7 @@ def compute_pred_error(
     )
     total, n = 0.0, 0
     with torch.no_grad():
-        for frame_t, frame_t1 in loader:
+        for frame_t, frame_t1, _texts in loader:
             frame_t, frame_t1 = frame_t.to(dev), frame_t1.to(dev)
             z_t1_pred = predictor(encoder(frame_t))
             z_t1 = encoder(frame_t1)
