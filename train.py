@@ -68,3 +68,29 @@ class SpriteEncoder(nn.Module):
         cls = self.cls_token.expand(B, -1, -1)
         x = torch.cat([cls, x], dim=1) + self.pos_embed
         return self.head(self.norm(self.transformer(x)[:, 0]))
+
+
+# ── Predictor ──────────────────────────────────────────────────────────────
+class SpritePredictor(nn.Module):
+    def __init__(self, latent_dim: int = LATENT_DIM, hidden_dim: int = PREDICTOR_HIDDEN):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.GELU(),
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, latent_dim),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(z)
+
+
+# ── Loss ───────────────────────────────────────────────────────────────────
+def gaussian_reg(z: torch.Tensor) -> torch.Tensor:
+    """Push latents toward N(0,1): mean→0, std→1 per dimension."""
+    mean_loss = z.mean(0).pow(2).mean()
+    var_loss = (1 - z.std(0).clamp(min=1e-6)).pow(2).mean()
+    return mean_loss + var_loss
