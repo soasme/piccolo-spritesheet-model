@@ -28,7 +28,7 @@ Once setup is confirmed, kick off the experimentation.
 
 ## Experimentation
 
-Each experiment is a full training run followed by an evaluation:
+Each experiment runs for a **fixed time budget of 5 minutes** (wall-clock training time, excluding startup). Launch as:
 
 ```bash
 uv run --no-sync train.py > run.log 2>&1
@@ -64,10 +64,15 @@ The first run should always be the baseline with no code changes, to establish t
 
 ## Output format
 
-Training prints progress lines like:
+Training prints progress lines and a final summary:
 
 ```
-step      0  loss=0.1234  pred_error=0.5678
+step      0  loss=0.1234  pred_error=0.5678  t=0s
+...
+---
+training_seconds: 300.1
+peak_vram_mb:     1234.5
+num_steps:        2700
 ```
 
 Evaluation prints the metric:
@@ -76,10 +81,11 @@ Evaluation prints the metric:
 pred_error (mean cosine distance): 0.1234
 ```
 
-Extract the metric from the eval log:
+Extract key values after a run:
 
 ```bash
 grep "pred_error" eval.log
+grep "^peak_vram_mb:" run.log
 ```
 
 ## Logging results
@@ -90,7 +96,7 @@ Columns:
 
 1. `commit` — short git hash (7 chars) for kept/discarded runs; use `working` for uncommitted crash/debug runs.
 2. `pred_error` — numeric metric from `eval.py`; use `0.000000` for crashes.
-3. `memory_gb` — peak GPU memory in GB, rounded to one decimal (read from `nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits` after training, divide by 1024); use `0.0` for crashes or CPU runs.
+3. `memory_gb` — peak GPU memory in GB, rounded to one decimal (from `grep "^peak_vram_mb:" run.log`, divide by 1024); use `0.0` for crashes or CPU runs.
 4. `status` — `keep`, `discard`, or `crash`.
 5. `description` — short text description of what this experiment tried.
 
@@ -123,7 +129,7 @@ LOOP FOREVER:
 11. If `pred_error` improved (lower): keep the commit — the branch advances.
 12. If `pred_error` did not improve: `git reset --hard HEAD~1` to revert the commit and restore the last kept version.
 
-**Timeout**: Each training run should complete in under 30 minutes (wall clock). If a run exceeds 30 minutes, kill it with `kill <pid>` and treat it as a failure — log `crash`, revert, and move on.
+**Timeout**: Each training run should complete in under 10 minutes (wall clock, including startup). If a run exceeds 10 minutes, kill it with `kill <pid>` and treat it as a failure — log `crash`, revert, and move on.
 
 **Crashes**: Use your judgment. If it's something easy to fix (typo, missing import), fix it and re-run. If the idea is fundamentally broken (OOM, bad architecture), log `crash` as the status, `git reset --hard HEAD~1`, and move on.
 

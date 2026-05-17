@@ -1,6 +1,7 @@
 from pathlib import Path
 from collections import defaultdict
 import json
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +20,7 @@ LAMBDA_REG = 0.1
 BATCH_SIZE = 64
 LR = 3e-4
 WEIGHT_DECAY = 1e-4
-MAX_STEPS = 10_000
+TRAINING_BUDGET = 300   # wall-clock seconds of training (excluding startup)
 LOG_EVERY = 100
 CHECKPOINT_PATH = Path("checkpoint.pt")
 DATA_DIR = Path("data")
@@ -182,7 +183,7 @@ class SpriteFrameDataset(torch.utils.data.Dataset):
 
 
 # ── Training loop ──────────────────────────────────────────────────────────
-def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
+def train(time_budget: int = TRAINING_BUDGET, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
     dev_str = _get_device(device)
     dev = torch.device(dev_str)
     is_cuda = dev_str == "cuda"
@@ -205,11 +206,15 @@ def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "a
         lr=LR, weight_decay=WEIGHT_DECAY,
     )
 
+    if is_cuda:
+        torch.cuda.reset_peak_memory_stats(dev)
+
     step, best_loss = 0, float("inf")
     data_iter = iter(loader)
-    print(f"Training on {len(dataset)} frame pairs  device={dev_str}")
+    t_start = time.time()
+    print(f"Training on {len(dataset)} frame pairs  device={dev_str}  budget={time_budget}s")
 
-    while step < steps:
+    while time.time() - t_start < time_budget:
         try:
             frame_t, frame_t1, _texts = next(data_iter)
         except StopIteration:
@@ -229,7 +234,8 @@ def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "a
 
         if step % LOG_EVERY == 0:
             pred_error = (1 - F.cosine_similarity(z_t1_pred.detach(), z_t1).mean()).item()
-            print(f"step {step:>6d}  loss={loss.item():.4f}  pred_error={pred_error:.4f}")
+            elapsed = time.time() - t_start
+            print(f"step {step:>6d}  loss={loss.item():.4f}  pred_error={pred_error:.4f}  t={elapsed:.0f}s")
             if loss.item() < best_loss:
                 best_loss = loss.item()
                 torch.save(
@@ -238,16 +244,22 @@ def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "a
                 )
         step += 1
 
-    print(f"Done. Best loss: {best_loss:.4f}  checkpoint: {CHECKPOINT_PATH}")
+    training_seconds = time.time() - t_start
+    peak_vram_mb = torch.cuda.max_memory_allocated(dev) / 1024**2 if is_cuda else 0.0
+    print(f"---")
+    print(f"training_seconds: {training_seconds:.1f}")
+    print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
+    print(f"num_steps:        {step}")
 
 
 if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser()
-    p.add_argument("--steps", type=int, default=MAX_STEPS)
+    p.add_argument("--time-budget", type=int, default=TRAINING_BUDGET,
+                   help="wall-clock training seconds (default: 300)")
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument("--device", type=str, default="auto",
                    help="cuda | mps | cpu | auto (default: auto-detect)")
     args = p.parse_args()
-    train(steps=args.steps, batch_size=args.batch_size, device=args.device)
+    train(time_budget=args.time_budget, batch_size=args.batch_size, device=args.device)
