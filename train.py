@@ -1,6 +1,7 @@
 from pathlib import Path
 from collections import defaultdict
 import json
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,11 +16,11 @@ PREDICTOR_HIDDEN = 256
 PATCH_SIZE = 4
 DEPTH = 4
 HEADS = 4
-LAMBDA_REG = 0.1
 BATCH_SIZE = 64
 LR = 3e-4
 WEIGHT_DECAY = 1e-4
-MAX_STEPS = 10_000
+TRAINING_BUDGET = 600   # wall-clock seconds of training (excluding startup)
+MAX_STEPS = 10_000      # used when time budget is disabled
 LOG_EVERY = 100
 CHECKPOINT_PATH = Path("checkpoint.pt")
 DATA_DIR = Path("data")
@@ -84,7 +85,7 @@ class SpriteEncoder(nn.Module):
             dim_feedforward=hidden_dim * 4,
             batch_first=True, norm_first=True, dropout=0.0,
         )
-        self.transformer = nn.TransformerEncoder(layer, num_layers=depth)
+        self.transformer = nn.TransformerEncoder(layer, num_layers=depth, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(hidden_dim)
         self.head = nn.Linear(hidden_dim, latent_dim)
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -117,16 +118,31 @@ class SpritePredictor(nn.Module):
         return self.net(z)
 
 
-# ── Loss ───────────────────────────────────────────────────────────────────
-def gaussian_reg(z: torch.Tensor) -> torch.Tensor:
-    """Push latents toward N(0,1): mean→0, std→1 per dimension."""
-    mean_loss = z.mean(0).pow(2).mean()
-    var_loss = (1 - z.std(0).clamp(min=1e-6)).pow(2).mean()
-    return mean_loss + var_loss
+# ── Decoder ────────────────────────────────────────────────────────────────
+class SpriteDecoder(nn.Module):
+    def __init__(self, latent_dim: int = LATENT_DIM, out_channels: int = 4):
+        super().__init__()
+        self.proj = nn.Linear(latent_dim, 512 * 4 * 4)
+        self.net = nn.Sequential(
+            nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),  # 4→8
+            nn.BatchNorm2d(256), nn.GELU(),
+            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # 8→16
+            nn.BatchNorm2d(128), nn.GELU(),
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # 16→32
+            nn.BatchNorm2d(64), nn.GELU(),
+            nn.ConvTranspose2d(64, out_channels, kernel_size=4, stride=2, padding=1),  # 32→64
+            nn.Tanh(),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.net(self.proj(z).reshape(z.shape[0], 512, 4, 4))
 
 
 # ── Dataset ────────────────────────────────────────────────────────────────
+FRAME_SIZE = 64  # all frames resized to this square; must be divisible by PATCH_SIZE
+
 _frame_transform = transforms.Compose([
+    transforms.Resize((FRAME_SIZE, FRAME_SIZE), interpolation=transforms.InterpolationMode.NEAREST),
     transforms.ToTensor(),
     transforms.Normalize([0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]),
 ])
@@ -182,7 +198,7 @@ class SpriteFrameDataset(torch.utils.data.Dataset):
 
 
 # ── Training loop ──────────────────────────────────────────────────────────
-def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
+def train(time_budget: int | None = TRAINING_BUDGET, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
     dev_str = _get_device(device)
     dev = torch.device(dev_str)
     is_cuda = dev_str == "cuda"
@@ -193,23 +209,29 @@ def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "a
 
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=True,
-        collate_fn=_pad_collate,
         num_workers=4 if is_cuda else 0,
         pin_memory=is_cuda,
         drop_last=True,
     )
     encoder = SpriteEncoder().to(dev)
     predictor = SpritePredictor().to(dev)
+    decoder = SpriteDecoder().to(dev)
     optimizer = torch.optim.AdamW(
-        list(encoder.parameters()) + list(predictor.parameters()),
+        list(encoder.parameters()) + list(predictor.parameters()) + list(decoder.parameters()),
         lr=LR, weight_decay=WEIGHT_DECAY,
     )
 
+    if is_cuda:
+        torch.cuda.reset_peak_memory_stats(dev)
+
     step, best_loss = 0, float("inf")
     data_iter = iter(loader)
-    print(f"Training on {len(dataset)} frame pairs  device={dev_str}")
+    t_start = time.time()
+    budget_str = f"{time_budget}s" if time_budget is not None else f"{MAX_STEPS} steps"
+    print(f"Training on {len(dataset)} frame pairs  device={dev_str}  budget={budget_str}")
 
-    while step < steps:
+    while (time_budget is not None and time.time() - t_start < time_budget) or \
+          (time_budget is None and step < MAX_STEPS):
         try:
             frame_t, frame_t1, _texts = next(data_iter)
         except StopIteration:
@@ -217,37 +239,45 @@ def train(steps: int = MAX_STEPS, batch_size: int = BATCH_SIZE, device: str = "a
             frame_t, frame_t1, _texts = next(data_iter)
 
         frame_t, frame_t1 = frame_t.to(dev), frame_t1.to(dev)
-        z_t = encoder(frame_t)
-        z_t1_pred = predictor(z_t)
-        with torch.no_grad():
-            z_t1 = encoder(frame_t1)
-
-        loss = F.mse_loss(z_t1_pred, z_t1) + LAMBDA_REG * gaussian_reg(z_t)
+        frame_t1_gen = decoder(predictor(encoder(frame_t)))
+        loss = F.l1_loss(frame_t1_gen, frame_t1)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         if step % LOG_EVERY == 0:
-            pred_error = (1 - F.cosine_similarity(z_t1_pred.detach(), z_t1).mean()).item()
-            print(f"step {step:>6d}  loss={loss.item():.4f}  pred_error={pred_error:.4f}")
+            elapsed = time.time() - t_start
+            print(f"step {step:>6d}  loss={loss.item():.4f}  t={elapsed:.0f}s")
             if loss.item() < best_loss:
                 best_loss = loss.item()
                 torch.save(
-                    {"encoder": encoder.state_dict(), "predictor": predictor.state_dict()},
+                    {
+                        "encoder": encoder.state_dict(),
+                        "predictor": predictor.state_dict(),
+                        "decoder": decoder.state_dict(),
+                    },
                     CHECKPOINT_PATH,
                 )
         step += 1
 
-    print(f"Done. Best loss: {best_loss:.4f}  checkpoint: {CHECKPOINT_PATH}")
+    training_seconds = time.time() - t_start
+    peak_vram_mb = torch.cuda.max_memory_allocated(dev) / 1024**2 if is_cuda else 0.0
+    print(f"---")
+    print(f"training_seconds: {training_seconds:.1f}")
+    print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
+    print(f"num_steps:        {step}")
 
 
 if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser()
-    p.add_argument("--steps", type=int, default=MAX_STEPS)
+    p.add_argument("--time-budget", type=int, default=TRAINING_BUDGET,
+                   help="wall-clock training seconds (default: 300)")
+    p.add_argument("--no-time-budget", dest="time_budget", action="store_const", const=None,
+                   help=f"disable time budget; train for {MAX_STEPS} steps instead")
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument("--device", type=str, default="auto",
                    help="cuda | mps | cpu | auto (default: auto-detect)")
     args = p.parse_args()
-    train(steps=args.steps, batch_size=args.batch_size, device=args.device)
+    train(time_budget=args.time_budget, batch_size=args.batch_size, device=args.device)
