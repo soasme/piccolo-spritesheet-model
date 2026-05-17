@@ -1,6 +1,5 @@
 from pathlib import Path
 import requests
-from PIL import Image
 
 DATA_DIR = Path("data")
 SPRITES_DIR = DATA_DIR / "sprites"
