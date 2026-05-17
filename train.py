@@ -125,11 +125,11 @@ class SpriteDecoder(nn.Module):
         self.proj = nn.Linear(latent_dim, 512 * 4 * 4)
         self.net = nn.Sequential(
             nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1),  # 4→8
-            nn.GELU(),
+            nn.BatchNorm2d(256), nn.GELU(),
             nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),  # 8→16
-            nn.GELU(),
+            nn.BatchNorm2d(128), nn.GELU(),
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),   # 16→32
-            nn.GELU(),
+            nn.BatchNorm2d(64), nn.GELU(),
             nn.ConvTranspose2d(64, out_channels, kernel_size=4, stride=2, padding=1),  # 32→64
             nn.Tanh(),
         )
