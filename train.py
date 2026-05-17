@@ -128,7 +128,10 @@ def gaussian_reg(z: torch.Tensor) -> torch.Tensor:
 
 
 # ── Dataset ────────────────────────────────────────────────────────────────
+FRAME_SIZE = 64  # all frames resized to this square; must be divisible by PATCH_SIZE
+
 _frame_transform = transforms.Compose([
+    transforms.Resize((FRAME_SIZE, FRAME_SIZE), interpolation=transforms.InterpolationMode.NEAREST),
     transforms.ToTensor(),
     transforms.Normalize([0.5, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]),
 ])
@@ -195,7 +198,6 @@ def train(time_budget: int | None = TRAINING_BUDGET, batch_size: int = BATCH_SIZ
 
     loader = torch.utils.data.DataLoader(
         dataset, batch_size=batch_size, shuffle=True,
-        collate_fn=_pad_collate,
         num_workers=4 if is_cuda else 0,
         pin_memory=is_cuda,
         drop_last=True,
