@@ -1,7 +1,7 @@
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-from train import SpriteEncoder, SpritePredictor, SpriteFrameDataset
+from train import SpriteEncoder, SpritePredictor, SpriteDecoder, SpriteFrameDataset
 
 
 def compute_pred_error(
@@ -13,11 +13,14 @@ def compute_pred_error(
     dev = torch.device(device)
     encoder = SpriteEncoder().to(dev)
     predictor = SpritePredictor().to(dev)
+    decoder = SpriteDecoder().to(dev)
     state = torch.load(checkpoint, map_location=dev, weights_only=True)
     encoder.load_state_dict(state["encoder"])
     predictor.load_state_dict(state["predictor"])
+    decoder.load_state_dict(state["decoder"])
     encoder.eval()
     predictor.eval()
+    decoder.eval()
 
     loader = torch.utils.data.DataLoader(
         SpriteFrameDataset(frames_dir), batch_size=batch_size, shuffle=False
@@ -26,10 +29,9 @@ def compute_pred_error(
     with torch.no_grad():
         for frame_t, frame_t1, _texts in loader:
             frame_t, frame_t1 = frame_t.to(dev), frame_t1.to(dev)
-            z_t1_pred = predictor(encoder(frame_t))
-            z_t1 = encoder(frame_t1)
-            total += (1 - F.cosine_similarity(z_t1_pred, z_t1)).sum().item()
-            n += frame_t.shape[0]
+            frame_t1_gen = decoder(predictor(encoder(frame_t)))
+            total += F.l1_loss(frame_t1_gen, frame_t1, reduction="sum").item()
+            n += frame_t.shape[0] * frame_t.shape[1] * frame_t.shape[2] * frame_t.shape[3]
     return total / n if n > 0 else 0.0
 
 
@@ -47,4 +49,4 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     error = compute_pred_error(args.checkpoint, args.frames_dir, device=args.device)
-    print(f"pred_error (mean cosine distance): {error:.4f}")
+    print(f"pred_error (mean pixel L1): {error:.4f}")
