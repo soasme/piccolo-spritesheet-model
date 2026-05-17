@@ -21,6 +21,7 @@ BATCH_SIZE = 64
 LR = 3e-4
 WEIGHT_DECAY = 1e-4
 TRAINING_BUDGET = 300   # wall-clock seconds of training (excluding startup)
+MAX_STEPS = 10_000      # used when time budget is disabled
 LOG_EVERY = 100
 CHECKPOINT_PATH = Path("checkpoint.pt")
 DATA_DIR = Path("data")
@@ -183,7 +184,7 @@ class SpriteFrameDataset(torch.utils.data.Dataset):
 
 
 # ── Training loop ──────────────────────────────────────────────────────────
-def train(time_budget: int = TRAINING_BUDGET, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
+def train(time_budget: int | None = TRAINING_BUDGET, batch_size: int = BATCH_SIZE, device: str = "auto") -> None:
     dev_str = _get_device(device)
     dev = torch.device(dev_str)
     is_cuda = dev_str == "cuda"
@@ -212,9 +213,11 @@ def train(time_budget: int = TRAINING_BUDGET, batch_size: int = BATCH_SIZE, devi
     step, best_loss = 0, float("inf")
     data_iter = iter(loader)
     t_start = time.time()
-    print(f"Training on {len(dataset)} frame pairs  device={dev_str}  budget={time_budget}s")
+    budget_str = f"{time_budget}s" if time_budget is not None else f"{MAX_STEPS} steps"
+    print(f"Training on {len(dataset)} frame pairs  device={dev_str}  budget={budget_str}")
 
-    while time.time() - t_start < time_budget:
+    while (time_budget is not None and time.time() - t_start < time_budget) or \
+          (time_budget is None and step < MAX_STEPS):
         try:
             frame_t, frame_t1, _texts = next(data_iter)
         except StopIteration:
@@ -258,6 +261,8 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--time-budget", type=int, default=TRAINING_BUDGET,
                    help="wall-clock training seconds (default: 300)")
+    p.add_argument("--no-time-budget", dest="time_budget", action="store_const", const=None,
+                   help=f"disable time budget; train for {MAX_STEPS} steps instead")
     p.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     p.add_argument("--device", type=str, default="auto",
                    help="cuda | mps | cpu | auto (default: auto-detect)")
